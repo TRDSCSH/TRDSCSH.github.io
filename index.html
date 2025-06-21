@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>直播背景遥控器</title>
+    <style>
+        :root {
+            --controls-width: 20vw;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars from toast if it's slightly off */
+        }
+
+        body {
+            background-color: white;
+        }
+
+        #controls {
+            box-sizing: border-box;
+            position: fixed;
+            top: 50%;
+            left: calc(100% - var(--controls-width));
+            width: var(--controls-width);
+            height: 50%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            opacity: 1;
+            transition: all 0.25s ease;
+            z-index: 10; /* Ensure controls are above local circle effect */
+        }
+
+        #togglewhite, #toggleblack, #toggle {
+            width: min(20vw, calc(10vh) * 1.618);
+            height: 10vh;
+            font-size: 3.9vh;
+            cursor: pointer;
+        }
+
+        #togglewhite {
+            background-color: rgb(242, 242, 242);
+        }
+
+        #toggleblack {
+            background-color: black;
+            color: white;
+            margin-top: 24px;
+        }
+
+        #toggle {
+            margin-top: 24px;
+        }
+
+        .circle {
+            padding: 8px;
+            text-align: center;
+            text-indent: 1em;
+            border-radius: 20px;
+            position: fixed;
+            height: 10px;
+            width: 10px;
+            z-index: 1; /* Behind controls, above body background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            white-space: nowrap;
+        }
+
+        .circle-transition {
+            text-indent: 0em;
+            box-sizing: border-box;
+            border-radius: 0px;
+            width: 100%;
+            height: 100%;
+            animation: expandCircle 1s forwards cubic-bezier(.63,.75,.59,1.01);
+        }
+
+        @keyframes expandCircle {
+            0% {
+                height: 1px;
+                width: 1px;
+                border-radius: 20px;
+                font-size: min(0.1vh, 0.1vw);
+            }
+            50% {
+                border-radius: 40px;
+                font-size: min(15vh, 15vw);
+            }
+            100% {
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                font-size: 0;
+            }
+        }
+
+        .infoContainer {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            position:absolute;
+            top: 0;
+            left: 0;
+            opacity: 1;
+            transition: all 0.75s ease-in-out;
+            z-index: 5;
+        }
+
+        .info {
+            padding-top: 12vh;
+            width: max(50%, 320px);
+            text-align: center;
+        }
+
+        .text {
+            background-color: white;
+        }
+
+        /* Removed original .statusContainer and .statusText styles as we're replacing them */
+
+        /* New Toast Styles */
+        #toastNotification {
+            position: fixed;
+            left: 50%;
+            bottom: 10%; /* Vertically lower */
+            transform: translateX(-50%);
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 16px;
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.5s ease, visibility 0.5s ease;
+            text-align: center;
+            min-width: 200px;
+            max-width: 80%;
+        }
+
+        #toastNotification.show {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Client ID Display Styles */
+        #clientIdDisplay {
+            position: fixed;
+            left: 10px;
+            bottom: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+    <div class="infoContainer">
+        <div class="info">
+            <span class="text">
+                点击按钮开始操作。
+            </span>
+        </div>
+    </div>
+    <div id="controls">
+        <!-- Original statusContainer is removed -->
+        <button id="toggleblack" onclick="sendBackgroundColorCommand('black', '关灯')">关灯</button>
+        <button id="togglewhite" onclick="sendBackgroundColorCommand('white', '开灯')">开灯</button>
+        <button id="toggle" onclick="toggleRemoteTheme()">切换</button>
+    </div>
+
+    <!-- New Toast Notification Element -->
+    <div id="toastNotification">正在连接服务器...</div>
+
+    <!-- New Client ID Display Element -->
+    <div id="clientIdDisplay">ID: N/A</div>
+
+    <script>
+        // --- WebSocket Configuration ---
+        const WS_SERVER_URL = `ws://${location.hostname}:8766`;
+
+        // --- DOM Elements ---
+        const bodyElement = document.querySelector('body');
+        const controlsElement = document.querySelector('#controls');
+        const infoContainerElement = document.querySelector('.infoContainer');
+        const toastElement = document.getElementById('toastNotification'); // New Toast element
+        const clientIdDisplayElement = document.getElementById('clientIdDisplay'); // New Client ID element
+
+        // --- State Variables ---
+        let ws_controller;
+        let currentTheme = 0; // 0: white, 1: black (local visual feedback for controller)
+        let showInfo = true;
+        let toastTimeout; // For managing the toast auto-hide
+        let assignedControllerId = "N/A"; // To store the ID from server
+
+        // --- Toast Notification Functions ---
+        function showToast(message, duration = 3000, isError = false) {
+            toastElement.textContent = message;
+            toastElement.style.backgroundColor = isError ? 'rgba(200, 0, 0, 0.8)' : 'rgba(0, 0, 0, 0.75)';
+            toastElement.classList.add('show');
+
+            clearTimeout(toastTimeout); // Clear any existing timeout
+            if (duration > 0) { // Duration 0 or less means sticky toast
+                toastTimeout = setTimeout(() => {
+                    toastElement.classList.remove('show');
+                }, duration);
+            }
+        }
+
+        function hideToast() {
+            clearTimeout(toastTimeout);
+            toastElement.classList.remove('show');
+        }
+
+        // --- WebSocket Functions ---
+        function connectControllerWebSocket() {
+            showToast('正在连接服务器...', 0); // Sticky until connected or error
+            ws_controller = new WebSocket(WS_SERVER_URL);
+
+            ws_controller.onopen = () => {
+                showToast('连接成功! 发送身份...', 3000);
+                const idMessage = {
+                    client_type: "controller",
+                    client_id: null // Server will assign an ID
+                };
+                ws_controller.send(JSON.stringify(idMessage));
+                console.log("Controller WebSocket connected and identified.");
+            };
+
+            ws_controller.onmessage = (event) => {
+                console.log('Controller received from server:', event.data);
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'status') {
+                        showToast(`服务器: ${data.message}`);
+                        // Check if the welcome message contains the assigned ID
+                        if (data.message && data.message.toLowerCase().includes("welcome controller")) {
+                            // Example: "Welcome controller controller_abc123."
+                            const parts = data.message.split(" ");
+                            if (parts.length >= 3) {
+                                assignedControllerId = parts[2].replace('.', ''); // Remove trailing dot if any
+                                clientIdDisplayElement.textContent = `ID: ${assignedControllerId}`;
+                            }
+                        }
+                    } else if (data.type === 'error') {
+                        showToast(`错误: ${data.message}`, 5000, true);
+                    } else {
+                         showToast(`服务器消息: ${data.message || JSON.stringify(data)}`);
+                    }
+                } catch (e) {
+                    console.error('Error processing server message:', e);
+                    showToast('处理服务器消息出错', 5000, true);
+                }
+            };
+
+            ws_controller.onclose = (event) => {
+                showToast(`连接已断开. ${event.reason || ''} 尝试重连...`, 0, true); // Sticky error
+                console.log('Controller WebSocket closed. Reconnecting in 3s...', event);
+                assignedControllerId = "N/A"; // Reset ID on disconnect
+                clientIdDisplayElement.textContent = `ID: ${assignedControllerId}`;
+                setTimeout(connectControllerWebSocket, 3000);
+            };
+
+            ws_controller.onerror = (error) => {
+                showToast('连接错误!', 0, true); // Sticky error
+                console.error('Controller WebSocket Error:', error);
+                // onclose will usually be called after an error, triggering reconnect
+            };
+        }
+
+        // --- UI Functions ---
+        function hideInfoContainer() {
+            if (showInfo) {
+                showInfo = false;
+                infoContainerElement.style.opacity = 0;
+            }
+        }
+
+        function createLocalCircleEffect(color, text) {
+            const randomTop = Math.random() * 100;
+            const randomLeft = Math.random() * 100;
+            const circle = document.createElement('div');
+            circle.classList.add('circle');
+            circle.classList.add('circle-transition');
+            circle.style.top = `${randomTop}%`;
+            circle.style.left = `${randomLeft}%`;
+            circle.style.backgroundColor = color;
+            circle.innerHTML = text ? text : color.toUpperCase();
+            circle.style.color = color === 'black' ? 'white' : 'black';
+
+            document.body.appendChild(circle);
+
+            circle.addEventListener('animationend', () => {
+                bodyElement.style.backgroundColor = color;
+                document.body.removeChild(circle);
+            });
+
+            if (showInfo) hideInfoContainer();
+        }
+
+        // --- Command Functions ---
+        function sendBackgroundColorCommand(color, text) {
+            if (!ws_controller || ws_controller.readyState !== WebSocket.OPEN) {
+                showToast('未连接到服务器!', 3000, true);
+                // alert('未连接到服务器，请稍后再试。'); // Replaced by toast
+                return;
+            }
+
+            const commandMessage = {
+                type: "command",
+                command: "set_background",
+                color: color,
+                text_label: text
+            };
+
+            ws_controller.send(JSON.stringify(commandMessage));
+            console.log(`Sent command to server:`, commandMessage);
+            showToast(`已发送: ${text}`);
+
+            createLocalCircleEffect(color, text);
+            currentTheme = (color === 'black') ? 1 : 0;
+        }
+
+        function toggleRemoteTheme() {
+            if (currentTheme === 0) {
+                sendBackgroundColorCommand('black', '关灯');
+            } else {
+                sendBackgroundColorCommand('white', '开灯');
+            }
+        }
+
+        // --- Initialize ---
+        connectControllerWebSocket(); // Start WebSocket connection on page load
+    </script>
+</body>
+</html>
